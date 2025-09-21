@@ -2,8 +2,9 @@
 name = "qi-harness"
 version = "0.1.0"
 description = "Harness and graph generator for qi-number validator"
+author = "David Berthiaume"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.8"
 dependencies = [
     "networkx>=3.5",
 ]
