@@ -1,0 +1,12 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/.vs
+/.claude
+/build
+/out/build/x64-Debug
+/CLAUDE.md
+/.venv
+/graphs
+/out/build/x64-Release

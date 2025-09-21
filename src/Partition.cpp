@@ -1,29 +1,21 @@
 #include "../include/Partition.h"
 #include "../include/Graph.h"
 #include <algorithm>
-#include <queue>
-#include <sstream>
 #include <cassert>
 #include <cstring>
 #include <cstdio>
 
-Partition::Partition() : num_vertices_(0), properties_calculated_(false), original_index_(-1) {
+Partition::Partition() : num_vertices_(0), qi_calculated_(false) {
     std::fill(partition_, partition_ + MAX_VERTICES, 0);
 }
 
 Partition::Partition(const int* partition_array, int num_vertices) 
-    : num_vertices_(num_vertices), properties_calculated_(false), original_index_(-1) {
+    : num_vertices_(num_vertices), qi_calculated_(false) {
     assert(num_vertices <= MAX_VERTICES);
     std::copy(partition_array, partition_array + num_vertices, partition_);
     std::fill(partition_ + num_vertices, partition_ + MAX_VERTICES, 0);
 }
 
-Partition::Partition(const std::vector<int>& partition_vector) 
-    : num_vertices_(partition_vector.size()), properties_calculated_(false), original_index_(-1) {
-    assert(partition_vector.size() <= MAX_VERTICES);
-    std::copy(partition_vector.begin(), partition_vector.end(), partition_);
-    std::fill(partition_ + num_vertices_, partition_ + MAX_VERTICES, 0);
-}
 
 Partition::Partition(const Partition& other) {
     copyFrom(other);
@@ -39,17 +31,12 @@ Partition& Partition::operator=(const Partition& other) {
 void Partition::copyFrom(const Partition& other) {
     num_vertices_ = other.num_vertices_;
     std::copy(other.partition_, other.partition_ + MAX_VERTICES, partition_);
-    properties_calculated_ = other.properties_calculated_;
-    is_connected_ = other.is_connected_;
-    is_independent_ = other.is_independent_;
-    interior_edges_ = other.interior_edges_;
+    qi_calculated_ = other.qi_calculated_;
     qi_number_ = other.qi_number_;
-    original_index_ = other.original_index_;
-    operation_ = other.operation_;
 }
 
-void Partition::invalidateCache() {
-    properties_calculated_ = false;
+void Partition::invalidateQiCache() {
+    qi_calculated_ = false;
 }
 
 int Partition::getLabel(int vertex) const {
@@ -61,177 +48,71 @@ void Partition::setLabel(int vertex, int label) {
     assert(vertex >= 0 && vertex < num_vertices_);
     if (partition_[vertex] != label) {
         partition_[vertex] = label;
-        invalidateCache();
+        invalidateQiCache();
     }
-}
-
-std::map<int, std::vector<int>> Partition::getBlocks() const {
-    std::map<int, std::vector<int>> blocks;
-    for (int v = 0; v < num_vertices_; v++) {
-        blocks[partition_[v]].push_back(v);
-    }
-    return blocks;
-}
-
-std::set<int> Partition::getUsedLabels() const {
-    std::set<int> labels;
-    for (int v = 0; v < num_vertices_; v++) {
-        labels.insert(partition_[v]);
-    }
-    return labels;
 }
 
 int Partition::getNumBlocks() const {
-    return getUsedLabels().size();
-}
-
-std::vector<int> Partition::getBlockVertices(int block_label) const {
-    std::vector<int> vertices;
+    bool used[MAX_VERTICES] = {false};
     for (int v = 0; v < num_vertices_; v++) {
-        if (partition_[v] == block_label) {
-            vertices.push_back(v);
-        }
+        used[partition_[v]] = true;
     }
-    return vertices;
-}
-
-int Partition::getBlockSize(int block_label) const {
     int count = 0;
-    for (int v = 0; v < num_vertices_; v++) {
-        if (partition_[v] == block_label) {
-            count++;
-        }
+    for (int i = 0; i < MAX_VERTICES; i++) {
+        if (used[i]) count++;
     }
     return count;
 }
 
-void Partition::calculateProperties(const Graph& graph) {
-    if (properties_calculated_) return;
-    
-    // Calculate interior edge count
-    interior_edges_ = 0;
-    const int* adj_matrix = graph.getAdjMatrix();
-    for (int i = 0; i < num_vertices_; i++) {
-        for (int j = i + 1; j < num_vertices_; j++) {
-            if (adj_matrix[i * num_vertices_ + j] && partition_[i] == partition_[j]) {
-                interior_edges_++;
-            }
+void Partition::getBlockVertices(int block_label, int* vertices, int& count) const {
+    count = 0;
+    for (int v = 0; v < num_vertices_; v++) {
+        if (partition_[v] == block_label) {
+            vertices[count++] = v;
         }
     }
-    
-    // Check if partition is independent (no interior edges)
-    is_independent_ = (interior_edges_ == 0);
-    
-    // Check if partition is connected (all blocks are connected)
-    is_connected_ = true;
-    auto blocks = getBlocks();
-    for (const auto& block_pair : blocks) {
-        if (!isBlockConnected(graph, block_pair.first)) {
-            is_connected_ = false;
-            break;
-        }
-    }
-    
-    // Calculate qi number
+}
+
+void Partition::calculateQiNumber(const Graph& graph) {
+    if (qi_calculated_) return;
     qi_number_ = calculateQiNumberInternal(graph);
-    
-    properties_calculated_ = true;
+    qi_calculated_ = true;
 }
 
-bool Partition::isBlockConnected(const Graph& graph, int block_label) const {
-    std::vector<int> block_vertices = getBlockVertices(block_label);
-    
-    if (block_vertices.size() <= 1) {
-        return true; // Single vertex or empty block is trivially connected
-    }
-    
-    // BFS to check connectivity within the block
-    const int* adj_matrix = graph.getAdjMatrix();
-    std::vector<bool> visited(num_vertices_, false);
-    std::queue<int> queue;
-    
-    // Start BFS from first vertex in block
-    queue.push(block_vertices[0]);
-    visited[block_vertices[0]] = true;
-    int visited_count = 1;
-    
-    while (!queue.empty() && visited_count < (int)block_vertices.size()) {
-        int current = queue.front();
-        queue.pop();
-        
-        // Check all other vertices in the same block
-        for (int v : block_vertices) {
-            if (!visited[v] && adj_matrix[current * num_vertices_ + v]) {
-                visited[v] = true;
-                queue.push(v);
-                visited_count++;
-            }
-        }
-    }
-    
-    return visited_count == (int)block_vertices.size();
+void Partition::calculateQiNumber(const Graph& graph, int min_required_qi) {
+    if (qi_calculated_) return;
+    qi_number_ = calculateQiNumberInternal(graph, min_required_qi);
+    qi_calculated_ = true;
 }
 
-bool Partition::isBlockIndependent(const Graph& graph, int block_label) const {
-    std::vector<int> block_vertices = getBlockVertices(block_label);
-    
-    if (block_vertices.size() <= 1) {
-        return true; // Single vertex is trivially independent
-    }
+bool Partition::areBlocksConnectedInQuotient(const Graph& graph, int block1, int block2) const {
+    if (block1 == block2) return false;
     
     const int* adj_matrix = graph.getAdjMatrix();
-    for (size_t i = 0; i < block_vertices.size(); i++) {
-        for (size_t j = i + 1; j < block_vertices.size(); j++) {
-            int u = block_vertices[i];
-            int v = block_vertices[j];
+    
+    // Check if any vertex in block1 is connected to any vertex in block2
+    for (int u = 0; u < num_vertices_; u++) {
+        if (partition_[u] != block1) continue;
+        for (int v = 0; v < num_vertices_; v++) {
+            if (partition_[v] != block2) continue;
             if (adj_matrix[u * num_vertices_ + v]) {
-                return false; // Found an edge within the block
+                return true;
             }
         }
     }
-    
-    return true;
+    return false;
 }
 
-std::vector<std::vector<int>> Partition::getBlockComponents(const Graph& graph, int block_label) const {
-    std::vector<int> block_vertices = getBlockVertices(block_label);
-    std::vector<std::vector<int>> components;
+void Partition::mergeBlocks(int block1, int block2) {
+    if (block1 == block2) return;
     
-    if (block_vertices.empty()) {
-        return components;
-    }
-    
-    const int* adj_matrix = graph.getAdjMatrix();
-    std::vector<bool> visited(num_vertices_, false);
-    
-    for (int start_vertex : block_vertices) {
-        if (!visited[start_vertex]) {
-            std::vector<int> component;
-            std::queue<int> queue;
-            
-            queue.push(start_vertex);
-            visited[start_vertex] = true;
-            component.push_back(start_vertex);
-            
-            while (!queue.empty()) {
-                int current = queue.front();
-                queue.pop();
-                
-                // Check all other vertices in the same block
-                for (int v : block_vertices) {
-                    if (!visited[v] && adj_matrix[current * num_vertices_ + v]) {
-                        visited[v] = true;
-                        queue.push(v);
-                        component.push_back(v);
-                    }
-                }
-            }
-            
-            components.push_back(component);
+    // Merge block2 into block1
+    for (int v = 0; v < num_vertices_; v++) {
+        if (partition_[v] == block2) {
+            partition_[v] = block1;
         }
     }
-    
-    return components;
+    invalidateQiCache();
 }
 
 int Partition::calculateQiNumberInternal(const Graph& graph) const {
@@ -241,19 +122,176 @@ int Partition::calculateQiNumberInternal(const Graph& graph) const {
     
     // Build quotient graph adjacency matrix
     bool quotient_adj[MAX_VERTICES][MAX_VERTICES];
-    for (int i = 0; i < k; i++) {
-        for (int j = 0; j < k; j++) {
+    for (int i = 0; i < MAX_VERTICES; i++) {
+        for (int j = 0; j < MAX_VERTICES; j++) {
             quotient_adj[i][j] = false;
+        }
+    }
+    
+    // Get list of used block labels (may not be consecutive)
+    int block_labels[MAX_VERTICES];
+    int label_count = 0;
+    bool seen[MAX_VERTICES] = {false};
+    
+    for (int v = 0; v < num_vertices_; v++) {
+        int label = partition_[v];
+        if (!seen[label]) {
+            seen[label] = true;
+            block_labels[label_count++] = label;
         }
     }
     
     // Check all edges in original graph to build quotient graph
     const int* adj_matrix = graph.getAdjMatrix();
+    
+    if (VERBOSE_QI_DEBUG) {
+        printf("Original graph edges and their block assignments:\n");
+    }
+    
     for (int u = 0; u < num_vertices_; u++) {
         for (int v = u + 1; v < num_vertices_; v++) {
             if (adj_matrix[u * num_vertices_ + v] == 1) {
                 int block_u = partition_[u];
                 int block_v = partition_[v];
+                
+                if (VERBOSE_QI_DEBUG) {
+                    printf("  Edge %d-%d: block %d to block %d", u, v, block_u, block_v);
+                }
+                
+                if (block_u != block_v) {
+                    quotient_adj[block_u][block_v] = true;
+                    quotient_adj[block_v][block_u] = true;
+                    if (VERBOSE_QI_DEBUG) {
+                        printf(" -> creates quotient edge\n");
+                    }
+                } else {
+                    if (VERBOSE_QI_DEBUG) {
+                        printf(" -> internal edge (ignored)\n");
+                    }
+                }
+            }
+        }
+    }
+    
+    if (VERBOSE_QI_DEBUG) {
+        // DEBUG: Print partition details
+        printf("\n=== QI CALCULATION DEBUG ===\n");
+        printf("Partition blocks (%d total):\n", label_count);
+        for (int i = 0; i < label_count; i++) {
+            int label = block_labels[i];
+            printf("  Block %d: vertices ", label);
+            for (int v = 0; v < num_vertices_; v++) {
+                if (partition_[v] == label) {
+                    printf("%d ", v);
+                }
+            }
+            printf("\n");
+        }
+        
+        // DEBUG: Print quotient graph adjacency and validate cycle property
+        printf("Quotient graph edges:\n");
+        int edge_count = 0;
+        for (int i = 0; i < label_count; i++) {
+            for (int j = i + 1; j < label_count; j++) {
+                int bi = block_labels[i];
+                int bj = block_labels[j];
+                if (quotient_adj[bi][bj]) {
+                    printf("  Block %d -- Block %d\n", bi, bj);
+                    edge_count++;
+                }
+            }
+        }
+        
+        // For cycle graphs: quotient should be a cycle (V edges for V vertices)
+        if (label_count > 2) {
+            printf("Quotient graph has %d vertices and %d edges ", label_count, edge_count);
+            if (edge_count == label_count) {
+                printf("(CYCLE - CORRECT)\n");
+            } else {
+                printf("(ERROR: should be %d edges for cycle)\n", label_count);
+            }
+        }
+    }
+    
+    // Optimization: Only consider unconnected blocks (potential independent set members)
+    // Connected blocks cannot be in the same independent set
+    int unconnected_blocks[MAX_VERTICES];
+    int unconnected_count = 0;
+    
+    for (int i = 0; i < label_count; i++) {
+        int block = block_labels[i];
+        bool has_connections = false;
+        
+        for (int j = 0; j < label_count; j++) {
+            if (i != j && quotient_adj[block][block_labels[j]]) {
+                has_connections = true;
+                break;
+            }
+        }
+        
+        // Include all blocks (connected and unconnected) for complete search
+        // but focus optimization on unconnected pairs
+        unconnected_blocks[unconnected_count++] = block;
+    }
+    
+    // Exact algorithm: try all possible ways to partition blocks into disjoint independent sets
+    int max_qi = 0;
+    
+    // Use recursive backtracking to find optimal partition
+    bool used[MAX_VERTICES] = {false};
+    
+    if (VERBOSE_QI_DEBUG) {
+        printf("Starting exhaustive search for optimal qi...\n");
+    }
+    
+    findOptimalQi(block_labels, label_count, quotient_adj, used, 0, 0, max_qi);
+    
+    if (VERBOSE_QI_DEBUG) {
+        printf("Final qi = %d\n", max_qi);
+        printf("=== END QI DEBUG ===\n\n");
+    }
+    
+    return max_qi;
+}
+
+int Partition::calculateQiNumberInternal(const Graph& graph, int min_required_qi) const {
+    int k = getNumBlocks();
+    
+    if (k == 1) return 0; // Single block is q-complete
+    
+    // Early exit: if we only need qi >= min_required_qi, we can stop early
+    if (min_required_qi <= 0) return calculateQiNumberInternal(graph);
+       
+    // Build quotient graph adjacency matrix
+    bool quotient_adj[MAX_VERTICES][MAX_VERTICES];
+    for (int i = 0; i < MAX_VERTICES; i++) {
+        for (int j = 0; j < MAX_VERTICES; j++) {
+            quotient_adj[i][j] = false;
+        }
+    }
+    
+    // Get list of used block labels (may not be consecutive)
+    int block_labels[MAX_VERTICES];
+    int label_count = 0;
+    bool seen[MAX_VERTICES] = {false};
+    
+    for (int v = 0; v < num_vertices_; v++) {
+        int label = partition_[v];
+        if (!seen[label]) {
+            seen[label] = true;
+            block_labels[label_count++] = label;
+        }
+    }
+    
+    // Check all edges in original graph to build quotient graph
+    const int* adj_matrix = graph.getAdjMatrix();
+    
+    for (int u = 0; u < num_vertices_; u++) {
+        for (int v = u + 1; v < num_vertices_; v++) {
+            if (adj_matrix[u * num_vertices_ + v] == 1) {
+                int block_u = partition_[u];
+                int block_v = partition_[v];
+                
                 if (block_u != block_v) {
                     quotient_adj[block_u][block_v] = true;
                     quotient_adj[block_v][block_u] = true;
@@ -262,157 +300,241 @@ int Partition::calculateQiNumberInternal(const Graph& graph) const {
         }
     }
     
-    // Use greedy algorithm to compute qi
+    // Use recursive backtracking with early stopping
     bool used[MAX_VERTICES] = {false};
-    int qi = 0;
+    int max_qi = 0;
     
-    while (true) {
-        // Find largest independent set in remaining quotient graph
-        std::vector<int> available_blocks;
-        for (int i = 0; i < k; i++) {
-            if (!used[i]) {
-                available_blocks.push_back(i);
-            }
+    if (VERBOSE_QI_DEBUG) {
+        printf("Starting exhaustive search with early stopping (min_required: %d)...\n", min_required_qi);
+    }
+    
+    findOptimalQi(block_labels, label_count, quotient_adj, used, 0, 0, max_qi, min_required_qi);
+    
+    if (VERBOSE_QI_DEBUG) {
+        printf("Early stopping search result: qi = %d (required >= %d)\n", max_qi, min_required_qi);
+    }
+    
+    return max_qi;
+}
+
+// Helper function for exact qi calculation using exhaustive backtracking
+void Partition::findOptimalQi(const int* block_labels, int label_count, 
+                             const bool quotient_adj[MAX_VERTICES][MAX_VERTICES],
+                             bool* used, int start_idx, int current_qi, int& max_qi) const {
+    
+    // Base case: no more unused blocks
+    bool has_unused = false;
+    for (int i = 0; i < label_count; i++) {
+        if (!used[block_labels[i]]) {
+            has_unused = true;
+            break;
         }
+    }
+    
+    if (!has_unused) {
+        if (current_qi > max_qi) {
+            max_qi = current_qi;
+        }
+        return;
+    }
+    
+    // Find first unused block
+    int first_unused = -1;
+    for (int i = 0; i < label_count; i++) {
+        if (!used[block_labels[i]]) {
+            first_unused = i;
+            break;
+        }
+    }
+    
+    if (first_unused == -1) {
+        if (current_qi > max_qi) {
+            max_qi = current_qi;
+        }
+        return;
+    }
+    
+    int start_block = block_labels[first_unused];
+    
+    // Try all possible independent sets that include start_block
+    // Use bitmask to enumerate all subsets of remaining unused blocks
+    int unused_blocks[MAX_VERTICES];
+    int unused_count = 0;
+    
+    for (int i = first_unused + 1; i < label_count; i++) {
+        if (!used[block_labels[i]]) {
+            unused_blocks[unused_count++] = block_labels[i];
+        }
+    }
+    
+    // Try all subsets of unused_blocks (2^unused_count possibilities)
+    int max_subset = 1 << unused_count;
+    
+    for (int subset = 0; subset < max_subset; subset++) {
+        // Build independent set starting with start_block
+        int independent_set[MAX_VERTICES];
+        int set_size = 1;
+        independent_set[0] = start_block;
         
-        if (available_blocks.empty()) break;
-        
-        // Greedy: start with block that has minimum connections to other available blocks
-        int best_start = -1;
-        int min_connections = k + 1;
-        for (int block : available_blocks) {
-            int connections = 0;
-            for (int other : available_blocks) {
-                if (block != other && quotient_adj[block][other]) {
-                    connections++;
+        // Add blocks from subset if they form an independent set
+        bool valid_set = true;
+        for (int bit = 0; bit < unused_count && valid_set; bit++) {
+            if (subset & (1 << bit)) {
+                int candidate = unused_blocks[bit];
+                
+                // Check if candidate is independent of all blocks in current set
+                for (int j = 0; j < set_size; j++) {
+                    if (quotient_adj[candidate][independent_set[j]]) {
+                        valid_set = false;
+                        break;
+                    }
+                }
+                
+                if (valid_set) {
+                    independent_set[set_size++] = candidate;
                 }
             }
-            if (connections < min_connections) {
-                min_connections = connections;
-                best_start = block;
-            }
         }
         
-        // Build maximal independent set starting with best_start
-        std::vector<int> independent_set = {best_start};
-        used[best_start] = true;
-        
-        for (int candidate : available_blocks) {
-            if (candidate == best_start) continue;
+        if (valid_set) {
+            if (VERBOSE_QI_DEBUG) {
+                // DEBUG: Print found independent set
+                printf("Found independent set (size %d, contributes %d): {", set_size, set_size - 1);
+                for (int j = 0; j < set_size; j++) {
+                    printf("%d", independent_set[j]);
+                    if (j < set_size - 1) printf(", ");
+                }
+                printf("}\n");
+            }
             
-            // Check if candidate is independent of all blocks in current set
-            bool is_independent_of_set = true;
-            for (int block_in_set : independent_set) {
-                if (quotient_adj[candidate][block_in_set]) {
-                    is_independent_of_set = false;
-                    break;
+            // Mark blocks in this independent set as used
+            bool temp_used[MAX_VERTICES];
+            for (int j = 0; j < MAX_VERTICES; j++) {
+                temp_used[j] = used[j];
+            }
+            
+            for (int j = 0; j < set_size; j++) {
+                temp_used[independent_set[j]] = true;
+            }
+            
+            // Contribution is (set_size - 1), but ignore single blocks (contribute 0)
+            int contribution = (set_size > 1) ? set_size - 1 : 0;
+            
+            // Recursively solve for remaining blocks
+            findOptimalQi(block_labels, label_count, quotient_adj, temp_used, 
+                         0, current_qi + contribution, max_qi);
+        }
+    }
+}
+
+// Helper function with early stopping for qi calculation
+void Partition::findOptimalQi(const int* block_labels, int label_count, 
+                             const bool quotient_adj[MAX_VERTICES][MAX_VERTICES],
+                             bool* used, int start_idx, int current_qi, int& max_qi,
+                             int min_required_qi) const {
+    
+    // Early stopping: if we've already found a sufficient qi, stop searching
+    if (max_qi >= min_required_qi) {
+        return;
+    }
+    
+    // Base case: no more unused blocks
+    bool has_unused = false;
+    for (int i = 0; i < label_count; i++) {
+        if (!used[block_labels[i]]) {
+            has_unused = true;
+            break;
+        }
+    }
+    
+    if (!has_unused) {
+        if (current_qi > max_qi) {
+            max_qi = current_qi;
+        }
+        return;
+    }
+    
+    // Find first unused block
+    int first_unused = -1;
+    for (int i = 0; i < label_count; i++) {
+        if (!used[block_labels[i]]) {
+            first_unused = i;
+            break;
+        }
+    }
+    
+    if (first_unused == -1) {
+        if (current_qi > max_qi) {
+            max_qi = current_qi;
+        }
+        return;
+    }
+    
+    int start_block = block_labels[first_unused];
+    
+    // Try all possible independent sets that include start_block
+    // Use bitmask to enumerate all subsets of remaining unused blocks
+    int unused_blocks[MAX_VERTICES];
+    int unused_count = 0;
+    
+    for (int i = first_unused + 1; i < label_count; i++) {
+        if (!used[block_labels[i]]) {
+            unused_blocks[unused_count++] = block_labels[i];
+        }
+    }
+    
+    // Try all subsets of unused_blocks (2^unused_count possibilities)
+    int max_subset = 1 << unused_count;
+    
+    for (int subset = 0; subset < max_subset; subset++) {
+        // Early stopping check
+        if (max_qi >= min_required_qi) {
+            return;
+        }
+        
+        // Build independent set starting with start_block
+        int independent_set[MAX_VERTICES];
+        int set_size = 1;
+        independent_set[0] = start_block;
+        
+        // Add blocks from subset if they form an independent set
+        bool valid_set = true;
+        for (int bit = 0; bit < unused_count && valid_set; bit++) {
+            if (subset & (1 << bit)) {
+                int candidate = unused_blocks[bit];
+                
+                // Check if candidate is independent of all blocks in current set
+                for (int j = 0; j < set_size; j++) {
+                    if (quotient_adj[candidate][independent_set[j]]) {
+                        valid_set = false;
+                        break;
+                    }
+                }
+                
+                if (valid_set) {
+                    independent_set[set_size++] = candidate;
                 }
             }
-            
-            if (is_independent_of_set) {
-                independent_set.push_back(candidate);
-                used[candidate] = true;
-            }
         }
         
-        // Add (size - 1) to qi for this independent set
-        qi += (int)independent_set.size() - 1;
-    }
-    
-    return qi;
-}
-
-void Partition::renormalizeLabels() {
-    std::map<int, int> old_to_new_id;
-    std::set<int> used_blocks = getUsedLabels();
-    
-    int new_id = 0;
-    for (int old_id : used_blocks) {
-        old_to_new_id[old_id] = new_id++;
-    }
-    
-    for (int v = 0; v < num_vertices_; v++) {
-        partition_[v] = old_to_new_id[partition_[v]];
-    }
-    
-    invalidateCache();
-}
-
-bool Partition::isNonDegenerate() const {
-    int max_label = *std::max_element(partition_, partition_ + num_vertices_);
-    std::set<int> used_labels = getUsedLabels();
-    
-    // Should use labels 0, 1, 2, ..., max_label exactly
-    return (int)used_labels.size() == max_label + 1 && 
-           *used_labels.begin() == 0 && 
-           *used_labels.rbegin() == max_label;
-}
-
-bool Partition::isCanonical() const {
-    std::vector<int> first_occurrence(getNumBlocks(), -1);
-    
-    for (int v = 0; v < num_vertices_; v++) {
-        int label = partition_[v];
-        if (first_occurrence[label] == -1) {
-            first_occurrence[label] = v;
+        if (valid_set) {
+            // Mark blocks in this independent set as used
+            bool temp_used[MAX_VERTICES];
+            for (int j = 0; j < MAX_VERTICES; j++) {
+                temp_used[j] = used[j];
+            }
+            
+            for (int j = 0; j < set_size; j++) {
+                temp_used[independent_set[j]] = true;
+            }
+            
+            // Contribution is (set_size - 1)
+            int contribution = (set_size > 1) ? set_size - 1 : 0;
+            
+            // Recursively solve for remaining blocks
+            findOptimalQi(block_labels, label_count, quotient_adj, temp_used, 
+                         0, current_qi + contribution, max_qi, min_required_qi);
         }
     }
-    
-    // Check that labels appear in order of first occurrence
-    for (int label = 1; label < getNumBlocks(); label++) {
-        if (first_occurrence[label] <= first_occurrence[label - 1]) {
-            return false;
-        }
-    }
-    
-    return true;
 }
 
-bool Partition::operator==(const Partition& other) const {
-    if (num_vertices_ != other.num_vertices_) return false;
-    return std::equal(partition_, partition_ + num_vertices_, other.partition_);
-}
-
-bool Partition::operator!=(const Partition& other) const {
-    return !(*this == other);
-}
-
-size_t Partition::hash() const {
-    size_t hash_value = 0;
-    for (int i = 0; i < num_vertices_; i++) {
-        hash_value = hash_value * 31 + partition_[i];
-    }
-    return hash_value;
-}
-
-std::string Partition::toString() const {
-    std::ostringstream oss;
-    oss << "[";
-    for (int i = 0; i < num_vertices_; i++) {
-        oss << partition_[i];
-        if (i < num_vertices_ - 1) oss << "-";
-    }
-    oss << "]";
-    return oss.str();
-}
-
-std::string Partition::toDebugString() const {
-    std::ostringstream oss;
-    oss << toString();
-    if (properties_calculated_) {
-        oss << " (Blocks: " << getNumBlocks() 
-            << ", Interior: " << interior_edges_ 
-            << ", qi: " << qi_number_
-            << ", Connected: " << (is_connected_ ? "Y" : "N")
-            << ", Independent: " << (is_independent_ ? "Y" : "N")
-            << ")";
-    }
-    if (!operation_.empty()) {
-        oss << " [" << operation_ << "]";
-    }
-    return oss.str();
-}
-
-void Partition::setOperation(const std::string& operation) {
-    operation_ = operation;
-}

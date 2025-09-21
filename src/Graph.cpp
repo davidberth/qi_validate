@@ -1,6 +1,8 @@
 #include "../include/Graph.h"
 #include <fstream>
 #include <iostream>
+#include <string>
+#include <sstream>
 
 Graph::Graph() {
     adjMatrix_ = nullptr;
@@ -73,13 +75,26 @@ bool Graph::loadFromFile(const char* filename) {
     // initialize graph with n vertices
     init(n);
     
-    // read edges
-    int src, dest;
-    while (file >> src >> dest) {
-        if (src >= 0 && src < n && dest >= 0 && dest < n && src != dest) {
-            addEdge(src, dest);
-        } else {
-            std::cout << "Warning: Invalid edge (" << src << ", " << dest << ") ignored" << std::endl;
+    // read edges until we hit the k= line
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+        
+        // check if this is the k= line
+        if (line.substr(0, 2) == "k=") {
+            critical_k = std::stoi(line.substr(2));
+            break;
+        }
+        
+        // parse edge
+        std::istringstream iss(line);
+        int src, dest;
+        if (iss >> src >> dest) {
+            if (src >= 0 && src < n && dest >= 0 && dest < n && src != dest) {
+                addEdge(src, dest);
+            } else {
+                std::cout << "Warning: Invalid edge (" << src << ", " << dest << ") ignored" << std::endl;
+            }
         }
     }
     
