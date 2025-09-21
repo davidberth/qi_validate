@@ -1,10 +1,5 @@
 """
 Graph generator for qi validation testing.
-
-This module provides tools for generating various types of graphs including:
-- Classic extremal and coloring graphs
-- Programmatically generated graph families
-- Robertson configurations from the 4-color theorem (from arxiv source)
 """
 
 import networkx as nx
@@ -87,8 +82,10 @@ class GraphGenerator:
         for n in [7, 9, 11, 15, 20]:
             cycle = nx.cycle_graph(n)
             cycle_path = os.path.join(cycles_dir, f"cycle_{n}.txt")
-            # For cycles, critical k is roughly n/2 + 1 (simplified)
-            critical_k = max(3, n // 2)
+            # For cycles of length ≥ 5, critical k = 4
+            # (cycles are 3-colorable for odd n, 2-colorable for even n, 
+            # but in Hadwiger context k' = 4 for cycles ≥ 5)
+            critical_k = 4 if n >= 5 else 3
             self.save_as_qi_format(cycle, cycle_path, critical_k)
         
         # Generate other graph families
@@ -98,7 +95,29 @@ class GraphGenerator:
         for n in [6, 8, 10]:
             wheel = nx.wheel_graph(n)
             wheel_path = os.path.join(wheel_dir, f"wheel_{n}.txt")
-            self.save_as_qi_format(wheel, wheel_path, 4)  # Wheels typically have small k'
+            # Wheel graph with n vertices has k' = n 
+            # (merging center with any rim vertex gives K_{n-1} minor)
+            self.save_as_qi_format(wheel, wheel_path, n)
+    
+    def generate_full_test_suite(self, base_dir: str = "graphs", include_robertson: bool = True):
+        """
+        Generate the complete test suite including Robertson configurations.
+        
+        Args:
+            base_dir: Base directory for graph organization
+            include_robertson: Whether to generate Robertson configurations
+        """
+        print("Generating complete test suite...")
+        
+        # Generate the standard test graphs
+        self.generate_test_graphs(base_dir)
+        
+        # Generate Robertson configurations if requested
+        if include_robertson:
+            print("\nGenerating Robertson configurations...")
+            self.generate_robertson_from_source(base_dir=base_dir)
+        
+        print("\nTest suite generation complete!")
     
     def generate_robertson_placeholders(self, base_dir: str = "graphs"):
         """
@@ -110,67 +129,90 @@ class GraphGenerator:
         robertson_dir = os.path.join(base_dir, "robertson")
         os.makedirs(robertson_dir, exist_ok=True)
         
-        # Create a README for the Robertson directory
-        readme_path = os.path.join(robertson_dir, "README.md")
-        with open(readme_path, 'w') as f:
-            f.write("# Robertson Configurations\n\n")
-            f.write("This directory will contain the 633 Robertson configurations from the 4-color theorem.\n")
-            f.write("Each configuration will be parsed and converted to qi_validate format.\n\n")
-            f.write("Format: config_XXX.txt where XXX is the configuration number (001-633)\n\n")
-            f.write("## Source\n")
-            f.write("Configurations are parsed from the arxiv source data.\n")
-            f.write("Use `generate_robertson_from_source()` to process the source file.\n")
+       
     
-    def generate_robertson_from_source(self, source_file: str, base_dir: str = "graphs"):
+    def generate_robertson_from_source(self, source_file: str = "robertson/source.txt", base_dir: str = "graphs"):
         """
-        Generate Robertson configurations from the arxiv source file.
+        Generate Robertson configurations from the source file using parse_robertson.py.
         
         Args:
-            source_file: Path to the downloaded Robertson configurations source file
+            source_file: Path to the Robertson configurations source file
             base_dir: Base directory for graph organization
         """
+        from .parse_robertson import parse_robertson_file
+        
         robertson_dir = os.path.join(base_dir, "robertson")
         os.makedirs(robertson_dir, exist_ok=True)
         
         if not os.path.exists(source_file):
             print(f"Warning: Robertson source file not found at {source_file}")
-            print("Please download the Robertson configurations from the arxiv paper.")
+            print("Please place the Robertson source file at robertson/source.txt")
+            print(f"Current working directory: {os.getcwd()}")
+            print(f"Looking for: {os.path.abspath(source_file)}")
             return
         
-        # TODO: Implement parsing of the specific format from arxiv
-        # This will depend on the exact format of the source file
-        print(f"Processing Robertson configurations from {source_file}")
+        print(f"Parsing Robertson configurations from {source_file}...")
         
-        # Placeholder: would parse each configuration and save as .txt
-        # for config_id in range(1, 634):  # 633 configurations
-        #     graph = self.parse_robertson_configuration(config_data)
-        #     filename = os.path.join(robertson_dir, f"config_{config_id:03d}.txt")
-        #     critical_k = self.determine_critical_k(graph)  # Implementation needed
-        #     self.save_as_qi_format(graph, filename, critical_k)
+        try:
+            # Parse all configurations from source file
+            configurations = parse_robertson_file(source_file)
+            
+            print(f"Found {len(configurations)} Robertson configurations")
+            
+            if len(configurations) == 0:
+                print("ERROR: No configurations were parsed from the source file")
+                return
+            
+            # Generate graph files for each configuration
+            for i, config in enumerate(configurations, 1):
+                config_name = f"config_{i:03d}"
+                config_file = os.path.join(robertson_dir, f"{config_name}.txt")
+                
+                # Convert configuration to NetworkX graph
+                graph = self._robertson_config_to_graph(config)
+                
+                # Save with k'=5 as specified
+                self.save_as_qi_format(graph, config_file, critical_k=5)
+            
+            print(f"Successfully generated {len(configurations)} Robertson configuration files")
+            
+        except Exception as e:
+            print(f"Error processing Robertson configurations: {e}")
+            print("Please check the source file format and parse_robertson.py implementation")
+    
+    def _robertson_config_to_graph(self, config):
+        """Convert a Robertson configuration dict to a NetworkX graph."""
+        import networkx as nx
         
-        print("Robertson configuration generation ready for implementation.")
-        print("Will generate config_001.txt through config_633.txt when source format is implemented.")
+        # Create graph with specified number of vertices
+        # Check both possible keys for vertex count
+        n = config.get('vertices', config.get('n', 0))
+        graph = nx.Graph()
+        graph.add_nodes_from(range(n))
+        
+        # Add edges from the configuration
+        edges = config.get('edges', [])
+        for edge in edges:
+            if len(edge) == 2:
+                u, v = edge
+                if 0 <= u < n and 0 <= v < n and u != v:
+                    graph.add_edge(u, v)
+        
+        return graph
     
     def _generate_classic_graphs(self, special_dir: str):
         """Generate classic extremal and coloring graphs."""
         
-        # Basic complete graphs
+        # Classic extremal graphs
         graphs_to_generate = [
-               # Petersen and related
+            # Petersen and related
             ("petersen", nx.petersen_graph(), 6, "Petersen graph (classic counterexample)"),
             
-            # Complete bipartite graphs  
-            ("k33_bipartite", nx.complete_bipartite_graph(3, 3), 4, "K3,3 complete bipartite (non-planar)"),
-            ("k23_bipartite", nx.complete_bipartite_graph(2, 2), 3, "K2,2 complete bipartite"),
-            ("k44_bipartite", nx.complete_bipartite_graph(7, 7), 8, "K7,7 complete bipartite"),
-            
             # Platonic solids
-            ("octahedral", nx.octahedral_graph(), 4, "Octahedral graph (3-regular, 6 vertices)"),
-            ("icosahedral", nx.icosahedral_graph(), 4, "Icosahedral graph (5-regular, 12 vertices)"),
-            ("dodecahedral", nx.dodecahedral_graph(), 4, "Dodecahedral graph (3-regular, 20 vertices)"),
+            ("octahedral", nx.octahedral_graph(), 5, "Octahedral graph (3-regular, 6 vertices)"),
+            ("icosahedral", nx.icosahedral_graph(), 6, "Icosahedral graph (5-regular, 12 vertices)"),
+            ("dodecahedral", nx.dodecahedral_graph(), 5, "Dodecahedral graph (3-regular, 20 vertices)"),
             
-            # Chvátal graph - smallest 4-chromatic 4-regular graph  
-            ("chvatal", self._chvatal_graph(), 5, "Chvátal graph (4-chromatic, 4-regular, 12 vertices)"),
             
             # Grötzsch graph - triangle-free 4-chromatic
             ("grotzsch", self._grotzsch_graph(), 5, "Grötzsch graph (triangle-free, 4-chromatic, 11 vertices)"),

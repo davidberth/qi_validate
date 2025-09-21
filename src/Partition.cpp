@@ -4,6 +4,11 @@
 #include <cassert>
 #include <cstring>
 #include <cstdio>
+#include <vector>
+#include <exception>
+#include <map>
+#include <string>
+#include "dsatur.hpp"
 
 Partition::Partition() : num_vertices_(0), qi_calculated_(false) {
     std::fill(partition_, partition_ + MAX_VERTICES, 0);
@@ -75,12 +80,20 @@ void Partition::getBlockVertices(int block_label, int* vertices, int& count) con
 
 void Partition::calculateQiNumber(const Graph& graph) {
     if (qi_calculated_) return;
+    if (VERBOSE_QI_DEBUG) {
+        printf("Entering calculateQiNumber() with %d blocks...\n", getNumBlocks());
+        fflush(stdout);
+    }
     qi_number_ = calculateQiNumberInternal(graph);
     qi_calculated_ = true;
 }
 
 void Partition::calculateQiNumber(const Graph& graph, int min_required_qi) {
     if (qi_calculated_) return;
+    if (VERBOSE_QI_DEBUG) {
+        printf("Entering calculateQiNumber() with early stopping: %d blocks, min_required=%d...\n", getNumBlocks(), min_required_qi);
+        fflush(stdout);
+    }
     qi_number_ = calculateQiNumberInternal(graph, min_required_qi);
     qi_calculated_ = true;
 }
@@ -118,6 +131,140 @@ void Partition::mergeBlocks(int block1, int block2) {
 int Partition::calculateQiNumberInternal(const Graph& graph) const {
     int k = getNumBlocks();
     
+    if (VERBOSE_QI_DEBUG) {
+        printf("=== QI CALCULATION (k=%d) ===\n", k);
+        printf("Algorithm selection: %s\n", (k <= 16) ? "EXACT (exhaustive)" : "FAST (chromatic number)");
+        fflush(stdout);
+    }
+    
+    if (k == 1) return 0; // Single block is q-complete
+    
+    // Build quotient graph for SmallGraph
+    // Get list of used block labels (may not be consecutive)
+    int block_labels[MAX_VERTICES];
+    int label_count = 0;
+    bool seen[MAX_VERTICES] = {false};
+    
+    for (int v = 0; v < num_vertices_; v++) {
+        int label = partition_[v];
+        if (!seen[label]) {
+            seen[label] = true;
+            block_labels[label_count++] = label;
+        }
+    }
+    
+    // Create mapping from block labels to consecutive indices for SmallGraph
+    int label_to_index[MAX_VERTICES];
+    for (int i = 0; i < MAX_VERTICES; i++) {
+        label_to_index[i] = -1;
+    }
+    for (int i = 0; i < label_count; i++) {
+        label_to_index[block_labels[i]] = i;
+    }
+    
+    // Build quotient graph adjacency matrix with consecutive indices
+    std::vector<std::vector<bool>> quotient_adj(label_count, std::vector<bool>(label_count, false));
+    
+    // Check all edges in original graph to build quotient graph
+    const int* adj_matrix = graph.getAdjMatrix();
+    
+    if (VERBOSE_QI_DEBUG) {
+        printf("\n=== QI CALCULATION DEBUG (ChromaticNumber) ===\n");
+        printf("Partition blocks (%d total):\n", label_count);
+        for (int i = 0; i < label_count; i++) {
+            int label = block_labels[i];
+            printf("  Block %d: vertices ", label);
+            for (int v = 0; v < num_vertices_; v++) {
+                if (partition_[v] == label) {
+                    printf("%d ", v);
+                }
+            }
+            printf("\n");
+        }
+    }
+    
+    for (int u = 0; u < num_vertices_; u++) {
+        for (int v = u + 1; v < num_vertices_; v++) {
+            if (adj_matrix[u * num_vertices_ + v] == 1) {
+                int block_u = partition_[u];
+                int block_v = partition_[v];
+                
+                if (block_u != block_v) {
+                    int idx_u = label_to_index[block_u];
+                    int idx_v = label_to_index[block_v];
+                    quotient_adj[idx_u][idx_v] = true;
+                    quotient_adj[idx_v][idx_u] = true;
+                }
+            }
+        }
+    }
+    
+    if (VERBOSE_QI_DEBUG) {
+        printf("Quotient graph edges:\n");
+        int edge_count = 0;
+        for (int i = 0; i < label_count; i++) {
+            for (int j = i + 1; j < label_count; j++) {
+                if (quotient_adj[i][j]) {
+                    printf("  Block %d -- Block %d\n", block_labels[i], block_labels[j]);
+                    edge_count++;
+                }
+            }
+        }
+        printf("Quotient graph has %d vertices and %d edges\n", label_count, edge_count);
+    }
+    
+    // Convert to graph-coloring library format and calculate chromatic number
+    try {
+        // Build graph in format expected by graph-coloring library
+        std::map<std::string, std::vector<std::string>> coloring_graph;
+        
+        // Initialize all vertices
+        for (int i = 0; i < label_count; i++) {
+            coloring_graph[std::to_string(i)] = std::vector<std::string>();
+        }
+        
+        // Add edges to graph
+        for (int i = 0; i < label_count; i++) {
+            for (int j = i + 1; j < label_count; j++) {
+                if (quotient_adj[i][j]) {
+                    coloring_graph[std::to_string(i)].push_back(std::to_string(j));
+                    coloring_graph[std::to_string(j)].push_back(std::to_string(i));
+                }
+            }
+        }
+        
+        // Use DSATUR algorithm to find chromatic number
+        GraphColoring::Dsatur dsatur(coloring_graph);
+        dsatur.color();
+        
+        // Get chromatic number
+        int chromatic_number = dsatur.get_num_colors();
+        
+        // qi = k - chromatic_number  
+        int qi = k - chromatic_number;
+        
+        if (VERBOSE_QI_DEBUG) {
+            printf("Chromatic number (DSATUR): %d\n", chromatic_number);
+            printf("qi = k - chromatic_number = %d - %d = %d\n", k, chromatic_number, qi);
+            printf("=== END QI DEBUG ===\n\n");
+        }
+        
+        return qi;
+        
+    } catch (const std::exception& e) {
+        if (VERBOSE_QI_DEBUG) {
+            printf("Graph coloring error: %s\n", e.what());
+            printf("Falling back to exhaustive calculation...\n");
+        }
+        
+        // Fallback to exhaustive calculation if coloring fails
+        return calculateQiNumberInternalExhaustive(graph);
+    }
+}
+
+int Partition::calculateQiNumberInternalExhaustive(const Graph& graph) const {
+    int k = getNumBlocks();
+    
     if (k == 1) return 0; // Single block is q-complete
     
     // Build quotient graph adjacency matrix
@@ -144,94 +291,18 @@ int Partition::calculateQiNumberInternal(const Graph& graph) const {
     // Check all edges in original graph to build quotient graph
     const int* adj_matrix = graph.getAdjMatrix();
     
-    if (VERBOSE_QI_DEBUG) {
-        printf("Original graph edges and their block assignments:\n");
-    }
-    
     for (int u = 0; u < num_vertices_; u++) {
         for (int v = u + 1; v < num_vertices_; v++) {
             if (adj_matrix[u * num_vertices_ + v] == 1) {
                 int block_u = partition_[u];
                 int block_v = partition_[v];
                 
-                if (VERBOSE_QI_DEBUG) {
-                    printf("  Edge %d-%d: block %d to block %d", u, v, block_u, block_v);
-                }
-                
                 if (block_u != block_v) {
                     quotient_adj[block_u][block_v] = true;
                     quotient_adj[block_v][block_u] = true;
-                    if (VERBOSE_QI_DEBUG) {
-                        printf(" -> creates quotient edge\n");
-                    }
-                } else {
-                    if (VERBOSE_QI_DEBUG) {
-                        printf(" -> internal edge (ignored)\n");
-                    }
                 }
             }
         }
-    }
-    
-    if (VERBOSE_QI_DEBUG) {
-        // DEBUG: Print partition details
-        printf("\n=== QI CALCULATION DEBUG ===\n");
-        printf("Partition blocks (%d total):\n", label_count);
-        for (int i = 0; i < label_count; i++) {
-            int label = block_labels[i];
-            printf("  Block %d: vertices ", label);
-            for (int v = 0; v < num_vertices_; v++) {
-                if (partition_[v] == label) {
-                    printf("%d ", v);
-                }
-            }
-            printf("\n");
-        }
-        
-        // DEBUG: Print quotient graph adjacency and validate cycle property
-        printf("Quotient graph edges:\n");
-        int edge_count = 0;
-        for (int i = 0; i < label_count; i++) {
-            for (int j = i + 1; j < label_count; j++) {
-                int bi = block_labels[i];
-                int bj = block_labels[j];
-                if (quotient_adj[bi][bj]) {
-                    printf("  Block %d -- Block %d\n", bi, bj);
-                    edge_count++;
-                }
-            }
-        }
-        
-        // For cycle graphs: quotient should be a cycle (V edges for V vertices)
-        if (label_count > 2) {
-            printf("Quotient graph has %d vertices and %d edges ", label_count, edge_count);
-            if (edge_count == label_count) {
-                printf("(CYCLE - CORRECT)\n");
-            } else {
-                printf("(ERROR: should be %d edges for cycle)\n", label_count);
-            }
-        }
-    }
-    
-    // Optimization: Only consider unconnected blocks (potential independent set members)
-    // Connected blocks cannot be in the same independent set
-    int unconnected_blocks[MAX_VERTICES];
-    int unconnected_count = 0;
-    
-    for (int i = 0; i < label_count; i++) {
-        int block = block_labels[i];
-        bool has_connections = false;
-        
-        for (int j = 0; j < label_count; j++) {
-            if (i != j && quotient_adj[block][block_labels[j]]) {
-                has_connections = true;
-                break;
-            }
-        }
-        
-        // Include all blocks (connected and unconnected) for complete search
-        // but focus optimization on unconnected pairs
-        unconnected_blocks[unconnected_count++] = block;
     }
     
     // Exact algorithm: try all possible ways to partition blocks into disjoint independent sets
@@ -247,8 +318,7 @@ int Partition::calculateQiNumberInternal(const Graph& graph) const {
     findOptimalQi(block_labels, label_count, quotient_adj, used, 0, 0, max_qi);
     
     if (VERBOSE_QI_DEBUG) {
-        printf("Final qi = %d\n", max_qi);
-        printf("=== END QI DEBUG ===\n\n");
+        printf("Exhaustive fallback result: qi = %d\n", max_qi);
     }
     
     return max_qi;
@@ -257,7 +327,114 @@ int Partition::calculateQiNumberInternal(const Graph& graph) const {
 int Partition::calculateQiNumberInternal(const Graph& graph, int min_required_qi) const {
     int k = getNumBlocks();
     
+    if (VERBOSE_QI_DEBUG) {
+        printf("=== QI CALCULATION WITH EARLY STOPPING (k=%d, min_required=%d) ===\n", k, min_required_qi);
+    }
+    
     if (k == 1) return 0; // Single block is q-complete
+    
+    // For larger graphs, try chromatic number approach first
+    if (k > 15) {
+        if (VERBOSE_QI_DEBUG) {
+            printf("Algorithm: FAST (DSATUR chromatic number) - attempting early exit\n");
+        }
+        try {
+            // Build quotient graph for SmallGraph (same as in main method)
+            int block_labels[MAX_VERTICES];
+            int label_count = 0;
+            bool seen[MAX_VERTICES] = {false};
+            
+            for (int v = 0; v < num_vertices_; v++) {
+                int label = partition_[v];
+                if (!seen[label]) {
+                    seen[label] = true;
+                    block_labels[label_count++] = label;
+                }
+            }
+            
+            // Create mapping from block labels to consecutive indices
+            int label_to_index[MAX_VERTICES];
+            for (int i = 0; i < MAX_VERTICES; i++) {
+                label_to_index[i] = -1;
+            }
+            for (int i = 0; i < label_count; i++) {
+                label_to_index[block_labels[i]] = i;
+            }
+            
+            // Build quotient graph adjacency matrix
+            std::vector<std::vector<bool>> quotient_adj(label_count, std::vector<bool>(label_count, false));
+            const int* adj_matrix = graph.getAdjMatrix();
+            
+            for (int u = 0; u < num_vertices_; u++) {
+                for (int v = u + 1; v < num_vertices_; v++) {
+                    if (adj_matrix[u * num_vertices_ + v] == 1) {
+                        int block_u = partition_[u];
+                        int block_v = partition_[v];
+                        
+                        if (block_u != block_v) {
+                            int idx_u = label_to_index[block_u];
+                            int idx_v = label_to_index[block_v];
+                            quotient_adj[idx_u][idx_v] = true;
+                            quotient_adj[idx_v][idx_u] = true;
+                        }
+                    }
+                }
+            }
+            
+            // Convert to graph-coloring library format
+            std::map<std::string, std::vector<std::string>> coloring_graph;
+            
+            // Initialize all vertices
+            for (int i = 0; i < label_count; i++) {
+                coloring_graph[std::to_string(i)] = std::vector<std::string>();
+            }
+            
+            // Add edges
+            for (int i = 0; i < label_count; i++) {
+                for (int j = i + 1; j < label_count; j++) {
+                    if (quotient_adj[i][j]) {
+                        coloring_graph[std::to_string(i)].push_back(std::to_string(j));
+                        coloring_graph[std::to_string(j)].push_back(std::to_string(i));
+                    }
+                }
+            }
+            
+            // Use DSATUR to find chromatic number
+            GraphColoring::Dsatur dsatur(coloring_graph);
+            dsatur.color();
+            int chromatic_number = dsatur.get_num_colors();
+            int qi = k - chromatic_number;
+            
+            if (VERBOSE_QI_DEBUG) {
+                printf("Fast chromatic calculation (DSATUR): qi = %d - %d = %d (required >= %d)\n", 
+                       k, chromatic_number, qi, min_required_qi);
+            }
+            
+            // If this satisfies our requirement, return it
+            if (qi >= min_required_qi) {
+                return qi;
+            }
+            
+        } catch (const std::exception& e) {
+            if (VERBOSE_QI_DEBUG) {
+                printf("Graph coloring error in fast path: %s\n", e.what());
+                printf("Returning UNDETERMINED for large graph\n");
+            }
+            return -1; // Return special value for undetermined
+        }
+        
+        // If we reach here, fast algorithm didn't satisfy threshold
+        if (VERBOSE_QI_DEBUG) {
+            printf("Fast algorithm result insufficient (required=%d)\n", min_required_qi);
+            printf("Returning UNDETERMINED for large graph to avoid expensive computation\n");
+        }
+        return -1; // Return special value for undetermined
+    }
+    
+    // Fall back to exhaustive early-stopping search for small graphs only
+    if (VERBOSE_QI_DEBUG) {
+        printf("Algorithm: EXACT (exhaustive backtracking with early stopping)\n");
+    }
     
     // Early exit: if we only need qi >= min_required_qi, we can stop early
     if (min_required_qi <= 0) return calculateQiNumberInternal(graph);

@@ -49,6 +49,7 @@ private:
     void invalidateQiCache();
     int calculateQiNumberInternal(const Graph& graph) const;
     int calculateQiNumberInternal(const Graph& graph, int min_required_qi) const;
+    int calculateQiNumberInternalExhaustive(const Graph& graph) const;
     void findOptimalQi(const int* block_labels, int label_count, 
                       const bool quotient_adj[MAX_VERTICES][MAX_VERTICES],
                       bool* used, int start_idx, int current_qi, int& max_qi) const;
